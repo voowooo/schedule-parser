@@ -2,6 +2,7 @@ import asyncio
 import io
 import json
 import logging
+import os
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -1445,6 +1446,28 @@ async def cmd_setgroup(message: types.Message):
 
 # --- СТАРТ ВСЕХ СЕРВИСОВ ---
 
+async def health_server():
+    """
+    Минимальный HTTP-сервер для Render Web Service (бесплатный тариф).
+    Render требует открытый порт, иначе убивает процесс по SIGTERM.
+    Отвечает 'ok' на / и /health. Порт берёт из env PORT.
+    """
+    from aiohttp import web
+
+    async def ok(request):
+        return web.Response(text="ok")
+
+    app = web.Application()
+    app.router.add_get("/", ok)
+    app.router.add_get("/health", ok)
+    port = int(os.getenv("PORT", "10000") or "10000")
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", port).start()
+    logger.info(f"Health-check сервер запущен на порту {port}.")
+    await asyncio.Event().wait()
+
+
 async def main():
     await init_db()
     logger.info("База данных инициализирована.")
@@ -1462,7 +1485,8 @@ async def main():
     await asyncio.gather(
         telethon_client.run_until_disconnected(),
         dp.start_polling(bot),
-        notification_loop()
+        notification_loop(),
+        health_server()
     )
 
 
