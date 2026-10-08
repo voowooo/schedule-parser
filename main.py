@@ -1033,6 +1033,89 @@ async def notification_loop():
 
 # --- AIOGRAM: КОМАНДЫ БОТА ---
 
+def build_schedule_rich_message(title: str, rows: list, user_sub: int) -> InputRichMessage:
+    """Строит rich-сообщение с таблицей расписания (общее для /today и /nextday)."""
+    sub_label = "Вся группа" if user_sub == 0 else f"{user_sub}-я подгруппа"
+    header = InputRichBlockParagraph(
+        text=RichTextBold(text=f"{title}\n{sub_label}")
+    )
+
+    table_rows = [
+        [
+            RichBlockTableCell(
+                text="Урок",
+                align="center",
+                valign="middle",
+                is_header=True,
+            ),
+            RichBlockTableCell(
+                text="Предмет",
+                align="left",
+                valign="middle",
+                is_header=True,
+            ),
+            RichBlockTableCell(
+                text="Каб.",
+                align="center",
+                valign="middle",
+                is_header=True,
+            ),
+        ]
+    ]
+
+    has_rows = False
+    for l_num, sub, subj, aud in rows:
+        # Показываем:
+        # - всё, если user_sub == 0
+        # - общие пары (sub == 0)
+        # - пары своей подгруппы
+        if user_sub == 0 or sub == 0 or sub == user_sub:
+            has_rows = True
+            sub_info = f" (подгр. {sub})" if sub > 0 else ""
+            subject = f"{subj}{sub_info}"
+            room = str(aud) if aud else "—"
+            table_rows.append(
+                [
+                    RichBlockTableCell(
+                        text=str(l_num),
+                        align="center",
+                        valign="middle",
+                    ),
+                    RichBlockTableCell(
+                        text=subject,
+                        align="left",
+                        valign="middle",
+                    ),
+                    RichBlockTableCell(
+                        text=room,
+                        align="center",
+                        valign="middle",
+                    ),
+                ]
+            )
+
+    if not has_rows:
+        return InputRichMessage(
+            blocks=[
+                header,
+                InputRichBlockParagraph(
+                    text="Пар для вашей подгруппы нет — можно отдыхать!"
+                ),
+            ]
+        )
+
+    return InputRichMessage(
+        blocks=[
+            header,
+            InputRichBlockTable(
+                cells=table_rows,
+                is_bordered=True,
+                is_striped=True,
+                is_compact=True,
+            ),
+        ]
+    )
+
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
     builder = InlineKeyboardBuilder()
@@ -1098,91 +1181,12 @@ async def cmd_today(message: types.Message):
         )
         return
 
-    # Название подгруппы
-    sub_label = (
-        "Вся группа"
-        if user_sub == 0
-        else f"{user_sub}-я подгруппа"
-    )
     target_group = await get_target_group()
-
-    # -----------------------------------------
-    # ТЕКСТОВЫЙ БЛОК
-    # -----------------------------------------
-
-    header = InputRichBlockParagraph(
-        text=RichTextBold(
-            text=f"Расписание {target_group} на сегодня ({today_str})\n{sub_label}"
-        )
+    rich_message = build_schedule_rich_message(
+        title=f"Расписание {target_group} на сегодня ({today_str})",
+        rows=rows,
+        user_sub=user_sub,
     )
-
-    # -----------------------------------------
-    # ЗАГОЛОВОК ТАБЛИЦЫ
-    # -----------------------------------------
-
-    table_rows = [
-        [
-            RichBlockTableCell(
-                text="Урок",
-                align="center",
-                valign="middle",
-                is_header=True,
-            ),
-
-            RichBlockTableCell(
-                text="Предмет",
-                align="left",
-                valign="middle",
-                is_header=True,
-            ),
-
-            RichBlockTableCell(
-                text="Каб.",
-                align="center",
-                valign="middle",
-                is_header=True,
-            ),
-        ]
-    ]
-
-    # -----------------------------------------
-    # СТРОКИ РАСПИСАНИЯ
-    # -----------------------------------------
-
-    for l_num, sub, subj, aud in rows:
-
-        # Показываем:
-        # - всё, если user_sub == 0
-        # - общие пары (sub == 0)
-        # - пары своей подгруппы
-        if user_sub == 0 or sub == 0 or sub == user_sub:
-
-            sub_info = f" (подгр. {sub})" if sub > 0 else ""
-
-            subject = f"{subj}{sub_info}"
-            room = str(aud) if aud else "—"
-
-            table_rows.append(
-                [
-                    RichBlockTableCell(
-                        text=str(l_num),
-                        align="center",
-                        valign="middle",
-                    ),
-
-                    RichBlockTableCell(
-                        text=subject,
-                        align="left",
-                        valign="middle",
-                    ),
-
-                    RichBlockTableCell(
-                        text=room,
-                        align="center",
-                        valign="middle",
-                    ),
-                ]
-            )
 
     # -----------------------------------------
     # ОТПРАВЛЯЕМ ОДНИМ RICH MESSAGE
@@ -1190,18 +1194,7 @@ async def cmd_today(message: types.Message):
 
     await message.bot.send_rich_message(
         chat_id=message.chat.id,
-        rich_message=InputRichMessage(
-            blocks=[
-                header,
-
-                InputRichBlockTable(
-                    cells=table_rows,
-                    is_bordered=True,
-                    is_striped=True,
-                    is_compact=True,
-                ),
-            ]
-        ),
+        rich_message=rich_message,
     )
 
 @dp.message(Command("nextday"))
@@ -1234,25 +1227,17 @@ async def cmd_nextday(message: types.Message):
         await message.answer(f"📅 На следующий день ({target_date}) расписание в базе не найдено.")
         return
 
-    user_rows = [
-        (l_num, sub, subj, aud)
-        for l_num, sub, subj, aud in rows
-        if user_sub == 0 or sub == 0 or sub == user_sub
-    ]
-
-    sub_label = "Вся группа" if user_sub == 0 else f"{user_sub}-я подгруппа"
     target_group = await get_target_group()
-    text = f"📅 **Расписание {target_group} на следующий день ({target_date})**\nПрофиль: **{sub_label}**\n\n"
+    rich_message = build_schedule_rich_message(
+        title=f"Расписание {target_group} на следующий день ({target_date})",
+        rows=rows,
+        user_sub=user_sub,
+    )
 
-    if not user_rows:
-        text += "Пар для вашей подгруппы нет — можно отдыхать!"
-    else:
-        for l_num, sub, subj, aud in user_rows:
-            sub_info = f" _(подгр. {sub})_" if sub > 0 else ""
-            room = f"каб. **{aud}**" if aud else "каб. не указан"
-            text += f"• **{l_num} пара:** {subj}{sub_info} — {room}\n"
-
-    await message.answer(text, parse_mode="Markdown")
+    await message.bot.send_rich_message(
+        chat_id=message.chat.id,
+        rich_message=rich_message,
+    )
 
 
 @dp.message(Command("parse"))
