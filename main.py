@@ -1469,6 +1469,10 @@ async def health_server():
 
 
 async def main():
+    # Сначала открываем HTTP-порт: Render ждёт его сразу после старта процесса
+    # и убивает сервис по таймауту, если порт не открылся.
+    health_task = asyncio.create_task(health_server())
+
     await init_db()
     logger.info("База данных инициализирована.")
 
@@ -1486,7 +1490,7 @@ async def main():
         telethon_client.run_until_disconnected(),
         dp.start_polling(bot),
         notification_loop(),
-        health_server()
+        health_task
     )
 
 
