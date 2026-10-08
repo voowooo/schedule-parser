@@ -110,7 +110,64 @@ async def init_db():
                 PRIMARY KEY (date, lesson_num, subgroup)
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
         await db.commit()
+        # Инициализируем целевую группу из config.py, если в БД её ещё нет
+        async with db.execute("SELECT value FROM app_settings WHERE key = 'target_group'") as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                await db.execute(
+                    "INSERT INTO app_settings (key, value) VALUES ('target_group', ?)",
+                    (config.TARGET_GROUP.strip(),)
+                )
+                await db.commit()
+
+
+async def get_target_group() -> str:
+    """Возвращает текущую целевую группу (из БД, с fallback на config.py)."""
+    try:
+        async with aiosqlite.connect("schedule.db") as db:
+            async with db.execute("SELECT value FROM app_settings WHERE key = 'target_group'") as cursor:
+                row = await cursor.fetchone()
+                if row and row[0] and str(row[0]).strip():
+                    return str(row[0]).strip()
+    except Exception as e:
+        logger.warning(f"Не удалось прочитать target_group из БД, использую config: {e}")
+    return config.TARGET_GROUP.strip()
+
+
+async def set_target_group(new_group: str) -> str:
+    """Сохраняет новую целевую группу в БД и возвращает нормализованное значение."""
+    normalized = new_group.strip()
+    async with aiosqlite.connect("schedule.db") as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('target_group', ?)",
+            (normalized,)
+        )
+        await db.commit()
+    return normalized
+
+
+def validate_group_name(group: str) -> str | None:
+    """
+    Проверяет название группы. Возвращает None если валидно,
+    иначе текст ошибки для пользователя.
+    """
+    if not group or not group.strip():
+        return "Название группы не должно быть пустым."
+    group = group.strip()
+    if len(group) > 20:
+        return "Название группы слишком длинное (максимум 20 символов)."
+    # Разрешаем буквы (кириллица/латиница), цифры, дефис
+    import re
+    if not re.fullmatch(r"[A-Za-zА-Яа-яЁё0-9\-]+", group):
+        return "Название группы может содержать только буквы, цифры и дефис (например: 11П, 122Д)."
+    return None
 
 
 async def has_schedule_for_date(target_date: str) -> bool:
@@ -679,7 +736,8 @@ async def process_photo_message(msg, fallback_date: str | None = None) -> str | 
         return None
 
     img_data = await msg.download_media(file=bytes)
-    result = await asyncio.to_thread(parse_image_with_gemini, img_data, config.TARGET_GROUP, fallback_date)
+    target_group = await get_target_group()
+    result = await asyncio.to_thread(parse_image_with_gemini, img_data, target_group, fallback_date)
 
     doc_date = result.get("date")
     if not doc_date or not isinstance(doc_date, str):
@@ -983,8 +1041,9 @@ async def cmd_start(message: types.Message):
     builder.button(text="Вся группа", callback_data="set_sub_0")
     builder.adjust(2, 1)
 
+    target_group = await get_target_group()
     await message.answer(
-        f"Привет! Я отслеживаю расписание для группы **{config.TARGET_GROUP}**.\n"
+        f"Привет! Я отслеживаю расписание для группы **{target_group}**.\n"
         "Выбери свою подгруппу, чтобы получать точные кабинеты за 15 минут до перемены:",
         reply_markup=builder.as_markup(),
         parse_mode="Markdown"
@@ -1045,6 +1104,7 @@ async def cmd_today(message: types.Message):
         if user_sub == 0
         else f"{user_sub}-я подгруппа"
     )
+    target_group = await get_target_group()
 
     # -----------------------------------------
     # ТЕКСТОВЫЙ БЛОК
@@ -1052,7 +1112,7 @@ async def cmd_today(message: types.Message):
 
     header = InputRichBlockParagraph(
         text=RichTextBold(
-            text=f"Расписание на сегодня ({today_str})\n{sub_label}"
+            text=f"Расписание {target_group} на сегодня ({today_str})\n{sub_label}"
         )
     )
 
@@ -1181,7 +1241,8 @@ async def cmd_nextday(message: types.Message):
     ]
 
     sub_label = "Вся группа" if user_sub == 0 else f"{user_sub}-я подгруппа"
-    text = f"📅 **Расписание на следующий день ({target_date})**\nПрофиль: **{sub_label}**\n\n"
+    target_group = await get_target_group()
+    text = f"📅 **Расписание {target_group} на следующий день ({target_date})**\nПрофиль: **{sub_label}**\n\n"
 
     if not user_rows:
         text += "Пар для вашей подгруппы нет — можно отдыхать!"
@@ -1208,6 +1269,7 @@ async def cmd_parse(message: types.Message):
     status_msg = await message.answer("⏳ Запускаю ручной парсинг расписания из канала...")
     try:
         updated_dates = await sync_schedule_if_needed(force=True)
+        target_group = await get_target_group()
         if updated_dates:
             dates_str = ", ".join(sorted(set(updated_dates)))
             await status_msg.edit_text(
@@ -1216,7 +1278,7 @@ async def cmd_parse(message: types.Message):
             )
         else:
             await status_msg.edit_text(
-                f"ℹ️ Парсинг завершён.\nНовых расписаний для группы **{config.TARGET_GROUP}** в последних постах канала не найдено.",
+                f"ℹ️ Парсинг завершён.\nНовых расписаний для группы **{target_group}** в последних постах канала не найдено.",
                 parse_mode="Markdown"
             )
     except Exception as e:
@@ -1282,6 +1344,64 @@ async def cmd_test(message: types.Message):
         force=True
     )
     await message.answer("Тестовое уведомление отправлено.")
+
+
+@dp.message(Command("group"))
+async def cmd_group(message: types.Message):
+    """Показывает текущую целевую группу."""
+    target_group = await get_target_group()
+    await message.answer(
+        f"📌 Текущая целевая группа: **{target_group}**.",
+        parse_mode="Markdown"
+    )
+
+
+@dp.message(Command("setgroup"))
+async def cmd_setgroup(message: types.Message):
+    """Меняет целевую группу (только админ). Использование: /setgroup 11П"""
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ У вас нет доступа к этой команде.")
+        return
+
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        current = await get_target_group()
+        await message.answer(
+            f"📌 Текущая целевая группа: **{current}**.\n\n"
+            "Использование: `/setgroup <название>`\n"
+            "Например: `/setgroup 11П`",
+            parse_mode="Markdown"
+        )
+        return
+
+    new_group = parts[1].strip()
+    error = validate_group_name(new_group)
+    if error:
+        await message.answer(f"❌ {error}")
+        return
+
+    old_group = await get_target_group()
+    normalized = await set_target_group(new_group)
+
+    if old_group == normalized:
+        await message.answer(
+            f"ℹ️ Группа уже установлена: **{normalized}**. Ничего не изменилось.",
+            parse_mode="Markdown"
+        )
+        return
+
+    # Расписание в БД относится к старой группе — очищаем, чтобы не показывать чужое
+    async with aiosqlite.connect("schedule.db") as db:
+        await db.execute("DELETE FROM schedule")
+        await db.commit()
+
+    logger.info(f"Целевая группа изменена {message.from_user.id}: '{old_group}' -> '{normalized}'. Расписание очищено.")
+    await message.answer(
+        f"✅ Целевая группа изменена: **{old_group}** → **{normalized}**.\n\n"
+        "Старое расписание очищено, т.к. оно относилось к прошлой группе.\n"
+        "Запустите /parse (или /parsenext), чтобы загрузить расписание новой группы из канала.",
+        parse_mode="Markdown"
+    )
 
 
 # --- СТАРТ ВСЕХ СЕРВИСОВ ---
