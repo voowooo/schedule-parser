@@ -45,7 +45,21 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 bot = Bot(token=config.BOT_TOKEN)
 dp = Dispatcher()
 ai_client = genai.Client(api_key=config.GEMINI_API_KEY)
-telethon_client = TelegramClient('channel_listener', config.TELEGRAM_API_ID, config.TELEGRAM_API_HASH)
+from telethon.sessions import StringSession
+_session_str = getattr(config, 'TELEGRAM_SESSION', '') or ''
+if _session_str:
+    telethon_client = TelegramClient(
+        StringSession(_session_str),
+        config.TELEGRAM_API_ID,
+        config.TELEGRAM_API_HASH
+    )
+else:
+    # Локальный режим: файловая сессия (первый запуск попросит номер телефона и код)
+    telethon_client = TelegramClient(
+        'channel_listener',
+        config.TELEGRAM_API_ID,
+        config.TELEGRAM_API_HASH
+    )
 
 TZ = ZoneInfo(config.TIMEZONE)
 parse_lock = asyncio.Lock()
