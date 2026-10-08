@@ -25,6 +25,8 @@ from aiogram.types import (
     InputRichMessage,
     InputRichBlockParagraph,
     InputRichBlockTable,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
     RichBlockTableCell,
     RichTextBold,
 )
@@ -47,6 +49,15 @@ telethon_client = TelegramClient('channel_listener', config.TELEGRAM_API_ID, con
 
 TZ = ZoneInfo(config.TIMEZONE)
 parse_lock = asyncio.Lock()
+
+# --- Нижние кнопки (ReplyKeyboard) ---
+BTN_TODAY = "📅 Сегодня"
+BTN_NEXT = "📅 Завтра"
+MAIN_KB = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text=BTN_TODAY), KeyboardButton(text=BTN_NEXT)]],
+    resize_keyboard=True,
+    is_persistent=True,
+)
 
 
 def is_admin(user_id: int) -> bool:
@@ -1127,9 +1138,13 @@ async def cmd_start(message: types.Message):
     target_group = await get_target_group()
     await message.answer(
         f"Привет! Я отслеживаю расписание для группы **{target_group}**.\n"
+        "Кнопки снизу — расписание на сегодня и на завтра.",
+        reply_markup=MAIN_KB,
+        parse_mode="Markdown"
+    )
+    await message.answer(
         "Выбери свою подгруппу, чтобы получать точные кабинеты за 15 минут до перемены:",
         reply_markup=builder.as_markup(),
-        parse_mode="Markdown"
     )
 
 
@@ -1149,6 +1164,15 @@ async def set_subgroup(callback: types.CallbackQuery):
 
 @dp.message(Command("today"))
 async def cmd_today(message: types.Message):
+    await send_today_schedule(message)
+
+
+@dp.message(F.text == BTN_TODAY)
+async def btn_today(message: types.Message):
+    await send_today_schedule(message)
+
+
+async def send_today_schedule(message: types.Message):
     now = datetime.now(TZ)
     today_str = now.strftime("%Y-%m-%d")
 
@@ -1177,7 +1201,8 @@ async def cmd_today(message: types.Message):
     # Если расписания нет
     if not rows:
         await message.answer(
-            f"📅 На сегодня ({today_str}) расписание в базе не найдено."
+            f"📅 На сегодня ({today_str}) расписание в базе не найдено.",
+            reply_markup=MAIN_KB,
         )
         return
 
@@ -1195,11 +1220,21 @@ async def cmd_today(message: types.Message):
     await message.bot.send_rich_message(
         chat_id=message.chat.id,
         rich_message=rich_message,
+        reply_markup=MAIN_KB,
     )
 
 @dp.message(Command("nextday"))
 async def cmd_nextday(message: types.Message):
     """Показывает расписание на следующий учебный день."""
+    await send_nextday_schedule(message)
+
+
+@dp.message(F.text == BTN_NEXT)
+async def btn_nextday(message: types.Message):
+    await send_nextday_schedule(message)
+
+
+async def send_nextday_schedule(message: types.Message):
     now = datetime.now(TZ)
     # Если суббота (5), следующим днем обычно является понедельник (+2 дня)
     if now.weekday() == 5:
@@ -1224,7 +1259,10 @@ async def cmd_nextday(message: types.Message):
             rows = await c.fetchall()
 
     if not rows:
-        await message.answer(f"📅 На следующий день ({target_date}) расписание в базе не найдено.")
+        await message.answer(
+            f"📅 На следующий день ({target_date}) расписание в базе не найдено.",
+            reply_markup=MAIN_KB,
+        )
         return
 
     target_group = await get_target_group()
@@ -1237,6 +1275,7 @@ async def cmd_nextday(message: types.Message):
     await message.bot.send_rich_message(
         chat_id=message.chat.id,
         rich_message=rich_message,
+        reply_markup=MAIN_KB,
     )
 
 
@@ -1337,7 +1376,8 @@ async def cmd_group(message: types.Message):
     target_group = await get_target_group()
     await message.answer(
         f"📌 Текущая целевая группа: **{target_group}**.",
-        parse_mode="Markdown"
+        parse_mode="Markdown",
+        reply_markup=MAIN_KB,
     )
 
 
