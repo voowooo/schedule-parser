@@ -6,6 +6,10 @@ import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import aiogram
+from telegram.helpers import escape_markdown
+from html import escape
+
 from PIL import Image
 import aiosqlite
 from aiogram import Bot, Dispatcher, F, types
@@ -14,6 +18,17 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from google import genai
 from google.genai import types as genai_types
 from telethon import TelegramClient, events
+
+from aiogram import types
+from aiogram.filters import Command
+from aiogram.types import (
+    InputRichMessage,
+    InputRichBlockParagraph,
+    InputRichBlockTable,
+    RichBlockTableCell,
+    RichTextBold,
+)
+from html import escape
 
 import config
 
@@ -996,31 +1011,138 @@ async def cmd_today(message: types.Message):
     today_str = now.strftime("%Y-%m-%d")
 
     async with aiosqlite.connect("schedule.db") as db:
-        async with db.execute("SELECT subgroup FROM users WHERE user_id = ?", (message.from_user.id,)) as c:
+
+        # Получаем подгруппу пользователя
+        async with db.execute(
+            "SELECT subgroup FROM users WHERE user_id = ?",
+            (message.from_user.id,)
+        ) as c:
             row = await c.fetchone()
             user_sub = row[0] if row else 0
 
+        # Получаем расписание
         async with db.execute(
-            "SELECT lesson_num, subgroup, subject, auditorium FROM schedule WHERE date = ? ORDER BY lesson_num, subgroup",
+            """
+            SELECT lesson_num, subgroup, subject, auditorium
+            FROM schedule
+            WHERE date = ?
+            ORDER BY lesson_num, subgroup
+            """,
             (today_str,)
         ) as c:
             rows = await c.fetchall()
 
+    # Если расписания нет
     if not rows:
-        await message.answer(f"📅 На сегодня ({today_str}) расписание в базе не найдено.")
+        await message.answer(
+            f"📅 На сегодня ({today_str}) расписание в базе не найдено."
+        )
         return
 
-    sub_label = "Вся группа" if user_sub == 0 else f"{user_sub}-я подгруппа"
-    text = f"📅 **Расписание на сегодня ({today_str})**\nПрофиль: **{sub_label}**\n\n"
+    # Название подгруппы
+    sub_label = (
+        "Вся группа"
+        if user_sub == 0
+        else f"{user_sub}-я подгруппа"
+    )
+
+    # -----------------------------------------
+    # ТЕКСТОВЫЙ БЛОК
+    # -----------------------------------------
+
+    header = InputRichBlockParagraph(
+        text=RichTextBold(
+            text=f"Расписание на сегодня ({today_str})\n{sub_label}"
+        )
+    )
+
+    # -----------------------------------------
+    # ЗАГОЛОВОК ТАБЛИЦЫ
+    # -----------------------------------------
+
+    table_rows = [
+        [
+            RichBlockTableCell(
+                text="Урок",
+                align="center",
+                valign="middle",
+                is_header=True,
+            ),
+
+            RichBlockTableCell(
+                text="Предмет",
+                align="left",
+                valign="middle",
+                is_header=True,
+            ),
+
+            RichBlockTableCell(
+                text="Каб.",
+                align="center",
+                valign="middle",
+                is_header=True,
+            ),
+        ]
+    ]
+
+    # -----------------------------------------
+    # СТРОКИ РАСПИСАНИЯ
+    # -----------------------------------------
 
     for l_num, sub, subj, aud in rows:
+
+        # Показываем:
+        # - всё, если user_sub == 0
+        # - общие пары (sub == 0)
+        # - пары своей подгруппы
         if user_sub == 0 or sub == 0 or sub == user_sub:
-            sub_info = f" _(подгр. {sub})_" if sub > 0 else ""
-            room = f"каб. **{aud}**" if aud else "каб. не указан"
-            text += f"• **{l_num} пара:** {subj}{sub_info} — {room}\n"
 
-    await message.answer(text, parse_mode="Markdown")
+            sub_info = f" (подгр. {sub})" if sub > 0 else ""
 
+            subject = f"{subj}{sub_info}"
+            room = str(aud) if aud else "—"
+
+            table_rows.append(
+                [
+                    RichBlockTableCell(
+                        text=str(l_num),
+                        align="center",
+                        valign="middle",
+                    ),
+
+                    RichBlockTableCell(
+                        text=subject,
+                        align="left",
+                        valign="middle",
+                    ),
+
+                    RichBlockTableCell(
+                        text=room,
+                        align="center",
+                        valign="middle",
+                    ),
+                ]
+            )
+
+    # -----------------------------------------
+    # ОТПРАВЛЯЕМ ОДНИМ RICH MESSAGE
+    # -----------------------------------------
+
+    await message.bot.send_rich_message(
+        chat_id=message.chat.id,
+        rich_message=InputRichMessage(
+            blocks=[
+                header,
+
+                InputRichBlockTable(
+                    cells=table_rows,
+                    is_bordered=True,
+                    is_striped=True,
+                    is_compact=True,
+                ),
+            ]
+        ),
+    )
 
 @dp.message(Command("nextday"))
 async def cmd_nextday(message: types.Message):
